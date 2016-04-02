@@ -1,5 +1,11 @@
 package main
 
+import (
+    "os"
+    "fmt"
+    "netgrok/network"
+)
+
 func main() {
     if len(os.Args) < 3 {
         fmt.Println("Too few arguments! I need ports.")
@@ -7,7 +13,8 @@ func main() {
     }
     network_channel := network.Init(os.Args[1], os.Args[2]);
     for {
-    	msg := <-network_channel;
+        msg := <-network_channel;
+        fmt.Println(msg);
 
     }
 }

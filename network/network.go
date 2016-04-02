@@ -1,20 +1,17 @@
 package network
 
 import (
-    "os"
-    "fmt"
     "net"
     "strings"
-    "strconv"
     "encoding/json"
     "time"
-    "bytes"
-    "buffer"
+    "netgrok/buffer"
+    . "netgrok/obj"
 )
 
 
-func listener(pop_channel chan<- Message) (<-chan Message) {
-    out := make(chan Message);
+func listener(pop_channel chan<- *Message) (<-chan *Message) {
+    out := make(chan *Message);
     go func () {
         sock, err := net.ListenUDP("udp", in_addr);
         defer sock.Close();
@@ -24,9 +21,9 @@ func listener(pop_channel chan<- Message) (<-chan Message) {
             if err != nil {
                 return;
             }
-            var obj Message;
+            var obj *Message;
             _ = json.Unmarshal(buffer[:], obj);
-            if obj.Signatures[0] == local_ip {
+            if obj.Signatures[0] == in_addr.String() {
                 pop_channel <- obj;
             } else {
                 out <- obj;
@@ -36,29 +33,32 @@ func listener(pop_channel chan<- Message) (<-chan Message) {
     return out;
 }
 
-func speaker(push_channel chan<- Message) (chan<- Message, chan<- *net.UDPAddr) {
-    send_channel := make(chan Message);
-    connection_channel := make(chan *net.UDPAddr);    
+func speaker(push_channel chan<- *Message) (chan<- *Message, chan<- *Message, chan<- *net.UDPAddr) {
+    send_channel := make(chan *Message);
+    broadcast_channel := make(chan *Message);
+    connection_channel := make(chan *net.UDPAddr);
 
     go func() {
-        var head_socket := nil;
         for {
             select {
             case obj := <- send_channel:
                 push_channel <-obj;
                 obj.Signatures = append(obj.Signatures, in_addr.String());
-                b := json.Marshal(obj);
-                _, err := head_socket.Write(b);
+                b, _ := json.Marshal(obj);
+                _, _ = head_socket.Write(b);
             case obj := <-broadcast_channel:
-                b := json.Marshal(obj);
-                _, err := head_socket.Write(b);
+                b, _ := json.Marshal(obj);
+                _, _ = broadcast_socket.Write(b);
             case addr := <-connection_channel:
-                head_socket, err := net.DialUDP("udp", out_addr, addr);
-                in_channel <- message.New(CONNECTION)
+                head_socket, _ = net.DialUDP("udp", out_addr, addr);
+
+                conn := NewConnection(in_addr, addr);
+                b, _ := json.Marshal(conn);
+                send_channel <-NewMessage(CONNECTION, b);
             }
         }
-    }
-    return send_channel, broadcast_channel, connect_channel;
+    }();
+    return send_channel, broadcast_channel, connection_channel;
 }
 
 /*func send(obj Message, socket *net.UDPConn) (error) {
@@ -93,7 +93,7 @@ func connect(addr *net.UDPAddr) (error) {
 }*/
 
 var in_addr, out_addr *net.UDPAddr;
-var head_socket, broadcast_socket *net.UDPConn;
+var broadcast_socket, head_socket *net.UDPConn;
 
 func Init(in_port, out_port string) (chan Message) {
     local_ips, _ := net.InterfaceAddrs();
@@ -113,53 +113,55 @@ func Init(in_port, out_port string) (chan Message) {
     fmt.Println(out_addr);
     fmt.Println(broadcast_addr);*/
 
-    broadcast_socket = net.DialUDP("udp", out_addr, broadcast_addr);
+    broadcast_socket, _ = net.DialUDP("udp", out_addr, broadcast_addr);
 
-    tail_timeout_channel := nil;
-    cycle_timeout_channel := nil;
+    var tail_timeout_channel/*, cycle_timeout_channel*/ <-chan time.Time;
 
-    push_channel, pop_channel := buffer();
+    push_channel, pop_channel := buffer.Init();
     rcv_channel := listener(pop_channel);
-    snd_channel, broadcast_channel, connection_channel := speaker(push_channel);
+    send_channel, broadcast_channel, connection_channel := speaker(push_channel);
  
     message_channel := make(chan Message);
     go func() {
         for {
-            if head_addr == nil {
-                head_request := message.New(HEAD_REQUEST, )
+            if head_socket == nil {
+                head_request := NewMessage(HEAD_REQUEST, []byte{});
                 broadcast_channel <-head_request;
                 select {
                 case <- time.After(5 * time.Second):
                     continue;
-                case rcv := <-msgCh:
-                    if rcv.Code == TAIL_REQUEST {
-                        connection_channel <-rcv.Body;
+                case msg := <-rcv_channel:
+                    if msg.Code == TAIL_REQUEST {
+                        var addr *net.UDPAddr;
+                        _ = json.Unmarshal(msg.Body[:], addr);
+                        connection_channel <-addr;
                     }
                 }
             } else {
                 select {
-                case <- Time.After(4):
-                    send(KEEP_ALIVE, "");
-                    timeOutCh = Time.After(8);
+                case <- time.After(4):
+                    send_channel <-NewMessage(KEEP_ALIVE, []byte{});
+                    tail_timeout_channel = time.After(8);
                 case msg :=  <-rcv_channel:
                     switch msg.Code {
                     case KEEP_ALIVE:
                         break;
                     case CONNECTION:
-                        if head_socket == nil || head_socket == rcv.Body.connectee {
-                            connection_channel <-rcv.Body.connector);
+                        var conn Connection;
+                        _ = json.Unmarshal(msg.Body[:], conn);
+                        if head_socket == nil || head_socket.RemoteAddr() == conn.To {
+                            connection_channel <-conn.From;
                         } else {
-                            speaker <- msg;
+                            send_channel <- msg;
                         }
                     }
-                    timeOutCh = nil;
-                case <- timeoutCh:
-                    //SLEEP SOME TIME
-                    send(TAIL_DEAD, "");
+                    tail_timeout_channel = nil;
+                case <- tail_timeout_channel:
+                    send_channel <-NewMessage(TAIL_DEAD, []byte{});
                     head_socket = nil;
                 }
             }
         } 
-    }
+    }();
     return message_channel;
 }
