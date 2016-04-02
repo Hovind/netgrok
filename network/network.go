@@ -10,18 +10,22 @@ import (
 )
 
 
-func listener(pop_channel chan<- *Message) (<-chan *Message) {
-    out := make(chan *Message);
+func listener(pop_channel chan<- Message) (<-chan Message) {
+    out := make(chan Message);
     go func () {
         sock, err := net.ListenUDP("udp", in_addr);
+        if err != nil {
+            fmt.fatal("Could not open listening socket.");
+        }
         defer sock.Close();
+        
         var buffer [1024]byte;
         for {
             _, _, err = sock.ReadFromUDP(buffer[:]);
             if err != nil {
                 return;
             }
-            var obj *Message;
+            var obj Message;
             _ = json.Unmarshal(buffer[:], obj);
             if obj.Signatures[0] == in_addr.String() {
                 pop_channel <- obj;
@@ -33,41 +37,39 @@ func listener(pop_channel chan<- *Message) (<-chan *Message) {
     return out;
 }
 
-func speaker(push_channel chan<- *Message) (chan<- *Message, chan<- *Message, chan<- *net.UDPAddr) {
-    send_channel := make(chan *Message);
-    broadcast_channel := make(chan *Message);
+func speaker(push_channel chan<- Message) (chan<- Message, chan<- Message, chan<- *net.UDPAddr) {
+    send_channel := make(chan Message);
+    broadcast_channel := make(chan Message);
     connection_channel := make(chan *net.UDPAddr);
 
     go func() {
         for {
             select {
-            case obj := <- send_channel:
-                push_channel <-obj;
-                obj.Signatures = append(obj.Signatures, in_addr.String());
-                b, _ := json.Marshal(obj);
-                _, _ = head_socket.Write(b);
-            case obj := <-broadcast_channel:
-                b, _ := json.Marshal(obj);
-                _, _ = broadcast_socket.Write(b);
+            case msg := <- send_channel:
+                push_channel <-msg;
+                msg.Signatures = append(msg.Signatures, in_addr.String());
+                send(msg, head_socket);
+            case msg := <-broadcast_channel:
+                send(msg, broadcast_socket);
             case addr := <-connection_channel:
                 head_socket, _ = net.DialUDP("udp", out_addr, addr);
 
                 conn := NewConnection(in_addr, addr);
                 b, _ := json.Marshal(conn);
-                send_channel <-NewMessage(CONNECTION, b);
+                msg := NewMessage(CONNECTION, b);
+                send(*msg, head_socket);
             }
         }
     }();
     return send_channel, broadcast_channel, connection_channel;
 }
 
-/*func send(obj Message, socket *net.UDPConn) (error) {
-    obj.Signatures = append(obj.Signatures, in_addr.String());
-    payload := json.Marshal(obj);
-    _, err := socket.Write(buffer);
+func send(msg Message, socket *net.UDPConn) (error) {
+    b, _ := json.Marshal(msg);
+    _, err := socket.Write(b);
     return err;
 }
-
+/*
 func broadcast(obj Message) (error) {
     obj := Message {
         Code:   code,
@@ -125,7 +127,7 @@ func Init(in_port, out_port string) (chan Message) {
     go func() {
         for {
             if head_socket == nil {
-                head_request := NewMessage(HEAD_REQUEST, []byte{});
+                head_request := *NewMessage(HEAD_REQUEST, []byte{});
                 broadcast_channel <-head_request;
                 select {
                 case <- time.After(5 * time.Second):
@@ -140,7 +142,7 @@ func Init(in_port, out_port string) (chan Message) {
             } else {
                 select {
                 case <- time.After(4):
-                    send_channel <-NewMessage(KEEP_ALIVE, []byte{});
+                    send_channel <-*NewMessage(KEEP_ALIVE, []byte{});
                     tail_timeout_channel = time.After(8);
                 case msg :=  <-rcv_channel:
                     switch msg.Code {
@@ -154,10 +156,16 @@ func Init(in_port, out_port string) (chan Message) {
                         } else {
                             send_channel <- msg;
                         }
+                    case HEAD_REQUEST:
+                    case TAIL_REQUEST:
+                    case TAIL_DEAD:
+                        time.Sleep(1 * time.Second);
+                    default:
+                        message_channel <-msg;
                     }
                     tail_timeout_channel = nil;
                 case <- tail_timeout_channel:
-                    send_channel <-NewMessage(TAIL_DEAD, []byte{});
+                    send_channel <-*NewMessage(TAIL_DEAD, []byte{});
                     head_socket = nil;
                 }
             }

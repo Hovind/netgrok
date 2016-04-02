@@ -5,9 +5,9 @@ import (
     "bytes"
 )
 
-func Init() (chan<- *Message, chan<- *Message) {
-    push_channel := make(chan *Message);
-    pop_channel := make(chan *Message);
+func Init() (chan<- Message, chan<- Message) {
+    push_channel := make(chan Message);
+    pop_channel := make(chan Message);
     
     buffer := []Message {}
     
@@ -15,7 +15,7 @@ func Init() (chan<- *Message, chan<- *Message) {
         for {
             select {
             case msg := <-push_channel:
-                buffer = append(buffer, *msg);
+                buffer = append(buffer, msg);
             case msg := <-pop_channel:
                 for i := range buffer {
                     if buffer[i].Code == msg.Code && bytes.Equal(buffer[i].Body, msg.Body) {
