@@ -14,9 +14,9 @@ func listener(pop_channel chan<- Message) (<-chan Message) {
     out := make(chan Message);
     go func () {
         sock, err := net.ListenUDP("udp", in_addr);
-        if err != nil {
+        /*if err != nil {
             fmt.fatal("Could not open listening socket.");
-        }
+        }*/
         defer sock.Close();
         
         var buffer [1024]byte;
@@ -25,21 +25,22 @@ func listener(pop_channel chan<- Message) (<-chan Message) {
             if err != nil {
                 return;
             }
-            var obj Message;
-            _ = json.Unmarshal(buffer[:], obj);
-            if obj.Signatures[0] == in_addr.String() {
-                pop_channel <- obj;
+            var msg Message;
+            _ = json.Unmarshal(buffer[:], msg);
+            if msg.Signatures[0] == in_addr.String() {
+                pop_channel <- msg;
             } else {
-                out <- obj;
+                out <- msg;
             }
         }
     }();
     return out;
 }
 
-func speaker(push_channel chan<- Message) (chan<- Message, chan<- Message, chan<- *net.UDPAddr) {
+func speaker(push_channel chan<- Message) (chan<- Message, chan<- Message, chan<- *net.UDPAddr, chan<- *net.UDPAddr) {
     send_channel := make(chan Message);
     broadcast_channel := make(chan Message);
+    tail_channel := make(chan *net.UDPAddr);
     connection_channel := make(chan *net.UDPAddr);
 
     go func() {
@@ -51,17 +52,22 @@ func speaker(push_channel chan<- Message) (chan<- Message, chan<- Message, chan<
                 send(msg, head_socket);
             case msg := <-broadcast_channel:
                 send(msg, broadcast_socket);
+            case addr := <- tail_channel:
+                tail_socket, _ := net.DialUDP("udp", nil, addr);
+                b, err := json.Marshal(addr);
+                msg := NewMessage(TAIL_REQUEST, b);
+                send(*msg, head_socket);
             case addr := <-connection_channel:
                 head_socket, _ = net.DialUDP("udp", out_addr, addr);
 
-                conn := NewConnection(in_addr, addr);
+                conn := NewConnection(out_addr, addr);
                 b, _ := json.Marshal(conn);
                 msg := NewMessage(CONNECTION, b);
                 send(*msg, head_socket);
             }
         }
     }();
-    return send_channel, broadcast_channel, connection_channel;
+    return send_channel, broadcast_channel, tail_channel, connection_channel;
 }
 
 func send(msg Message, socket *net.UDPConn) (error) {
@@ -121,7 +127,7 @@ func Init(in_port, out_port string) (chan Message) {
 
     push_channel, pop_channel := buffer.Init();
     rcv_channel := listener(pop_channel);
-    send_channel, broadcast_channel, connection_channel := speaker(push_channel);
+    send_channel, broadcast_channel, whisper_channel, connection_channel := speaker(push_channel);
  
     message_channel := make(chan Message);
     go func() {
@@ -157,6 +163,11 @@ func Init(in_port, out_port string) (chan Message) {
                             send_channel <- msg;
                         }
                     case HEAD_REQUEST:
+                        var conn Connection;
+                        _ = json.Unmarshal(msg.Body[:], conn);
+                        b, _ := json.Marshal(in_addr);
+                        tail_request := *NewMessage(TAIL_REQUEST, b);
+                        tail_channel <-tail_request;
                     case TAIL_REQUEST:
                     case TAIL_DEAD:
                         time.Sleep(1 * time.Second);
