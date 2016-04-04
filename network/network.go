@@ -75,8 +75,9 @@ func send(msg Message, addr *net.UDPAddr) (error) {
     return err;
 }
 
-func sending_manager(push_channel chan<- Message) (chan<- Message, chan<- Message, chan<- *net.UDPAddr) {
+func sending_manager(push_channel chan<- Message) (chan<- Message, chan<- Message, chan<- Message, chan<- *net.UDPAddr) {
     send_channel := make(chan Message);
+    relay_channel := make(chan Message);
     broadcast_channel := make(chan Message);
     tail_channel := make(chan *net.UDPAddr);
 
@@ -85,6 +86,8 @@ func sending_manager(push_channel chan<- Message) (chan<- Message, chan<- Messag
             select {
             case msg := <-send_channel:
                 push_channel <-msg;
+                send(msg, head_addr);
+            case msg := <-relay_channel:
                 send(msg, head_addr);
             case msg := <-broadcast_channel:
                 send(msg, broadcast_addr);
@@ -95,7 +98,7 @@ func sending_manager(push_channel chan<- Message) (chan<- Message, chan<- Messag
             }
         }
     }();
-    return send_channel, broadcast_channel, tail_channel;
+    return send_channel, relay_channel, broadcast_channel, tail_channel;
 }
 
 var local_addr, head_addr, broadcast_addr *net.UDPAddr;
@@ -129,7 +132,7 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
 
     push_channel, pop_channel := buffer.Init();
     rcv_channel := listening_manager(pop_channel, socket, broadcast_socket);
-    send_channel, broadcast_channel, tail_channel := sending_manager(push_channel);
+    send_channel, relay_channel, broadcast_channel, tail_channel := sending_manager(push_channel);
 
     to_network_channel := make(chan Message);
     from_network_channel := make(chan Message);
@@ -157,37 +160,41 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                     }
                 }
             } else {
-                //fmt.Println("Head:", head_addr.String());
                 select {
                 case msg := <-to_network_channel:
                     send_channel <-msg;
                 case msg :=  <-rcv_channel:
                     switch msg.Code {
                     case KEEP_ALIVE:
-                        send_channel <-msg;
+                        relay_channel <-msg;
                     case CONNECTION:
                         var conn Connection;
-                        _ = json.Unmarshal(msg.Body, &conn);
+                        err := json.Unmarshal(msg.Body, &conn);
                         if err != nil {
                             fmt.Println("Could not unmarshal connection.");
+                        } else {
+                            if head_addr == nil || head_addr.String() == conn.To.String() {
+                               head_addr = conn.From;
+                            }
+                            relay_channel <-msg;
                         }
-                        if head_addr == nil || head_addr.String() == conn.To.String() {
-                            head_addr = conn.From;
-                        }
-                        send_channel <-msg;
                     case HEAD_REQUEST:
                         var addr *net.UDPAddr;
-                        _ = json.Unmarshal(msg.Body, &addr);
-                        tail_channel <-addr;
+                        err := json.Unmarshal(msg.Body, &addr);
+                        if err != nil {
+                            fmt.Println("Could not unmarshal message.")
+                        } else {
+                            tail_channel <-addr;
+                        }
                     case TAIL_REQUEST:
                         break;
                     case TAIL_DEAD:
                         time.Sleep(1 * time.Second);
-                        send_channel <-msg;
+                        relay_channel <-msg;
                         head_addr = nil;
                     default:
                         from_network_channel <-msg;
-                        send_channel <-msg;
+                        relay_channel <-msg;
                     }
                     tail_timeout_channel = nil;
                 case <- time.After(1 * time.Second):
