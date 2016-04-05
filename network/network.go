@@ -75,11 +75,11 @@ func send(msg Message, addr *net.UDPAddr) (error) {
     return err;
 }
 
-func sending_manager(push_channel chan<- Message) (chan<- Message, chan<- Message, chan<- Message, chan<- *net.UDPAddr) {
+func sending_manager(push_channel chan<- Message) (chan<- Message, chan<- Message, chan<- Message) {
     send_channel := make(chan Message);
     relay_channel := make(chan Message);
     broadcast_channel := make(chan Message);
-    tail_channel := make(chan *net.UDPAddr);
+    //tail_channel := make(chan *net.UDPAddr);
 
     go func() {
         for {
@@ -91,14 +91,14 @@ func sending_manager(push_channel chan<- Message) (chan<- Message, chan<- Messag
                 send(msg, head_addr);
             case msg := <-broadcast_channel:
                 send(msg, broadcast_addr);
-            case addr := <-tail_channel:
+            /*case addr := <-tail_channel:
                 b, _ := json.Marshal(local_addr);
                 msg := *NewMessage(TAIL_REQUEST, b);
                 send(msg, addr);
-            }
+            */}
         }
     }();
-    return send_channel, relay_channel, broadcast_channel, tail_channel;
+    return send_channel, relay_channel, broadcast_channel;
 }
 
 var local_addr, head_addr, broadcast_addr *net.UDPAddr;
@@ -132,7 +132,7 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
 
     push_channel, pop_channel := buffer.Init();
     rcv_channel := listening_manager(pop_channel, socket, broadcast_socket);
-    send_channel, relay_channel, broadcast_channel, tail_channel := sending_manager(push_channel);
+    send_channel, relay_channel, broadcast_channel := sending_manager(push_channel);
 
     to_network_channel := make(chan Message);
     from_network_channel := make(chan Message);
@@ -157,10 +157,14 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                     case HEAD_REQUEST:
                         //SPAWN CONNECTION
                         var addr *net.UDPAddr;
-                        _ = json.Unmarshal(msg.Body, &addr);
-                        b, _ := json.Marshal(local_addr);
-                        msg := *NewMessage(TAIL_REQUEST, b);
-                        send(msg, addr);
+                        err := json.Unmarshal(msg.Body, &addr);
+                        if err != nil {
+                            fmt.Println("Could not unmarshal message.")
+                        } else {
+                            b, _ := json.Marshal(local_addr);
+                            msg := *NewMessage(TAIL_REQUEST, b);
+                            send(msg, addr);
+                        }
                     }
                 }
             } else {
@@ -170,7 +174,7 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                 case msg :=  <-rcv_channel:
                     switch msg.Code {
                     case KEEP_ALIVE:
-                        break;//relay_channel <-msg;
+                        break;
                     case CONNECTION:
                         var conn Connection;
                         err := json.Unmarshal(msg.Body, &conn);
@@ -180,7 +184,7 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                             if head_addr == nil || head_addr.String() == conn.To.String() {
                                head_addr = conn.From;
                             }
-                            relay_channel <-msg;
+                            send(msg, head_addr);
                         }
                     case HEAD_REQUEST:
                         var addr *net.UDPAddr;
@@ -188,7 +192,9 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                         if err != nil {
                             fmt.Println("Could not unmarshal message.")
                         } else {
-                            tail_channel <-addr;
+                            b, _ := json.Marshal(local_addr);
+                            msg := *NewMessage(TAIL_REQUEST, b);
+                            send(msg, addr);
                         }
                     case TAIL_REQUEST:
                         break;
