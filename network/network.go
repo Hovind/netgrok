@@ -116,19 +116,23 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                 msg := *NewMessage(HEAD_REQUEST, b);
                 send(msg, broadcast_addr);
                 select {
-                case <- time.After(4 * time.Second):
+                case <- time.After(10 * time.Second):
                     continue;
                 case msg := <-rcv_channel:
                     switch msg.Code {
                     case TAIL_REQUEST:
                         var addr *net.UDPAddr;
-                        _ = json.Unmarshal(msg.Body, &addr);
-                        head_addr = addr;
-                        conn := NewConnection(local_addr, addr);
-                        b, _ := json.Marshal(conn);
-                        msg := *NewMessage(CONNECTION, b);
-                        push_channel <-msg;
-                        send(msg, addr);
+                        err := json.Unmarshal(msg.Body, &addr);
+                        if err != nil {
+                            fmt.Println("Could not unmarshal address.");
+                        } else {
+                            head_addr = addr;
+                            conn := NewConnection(local_addr, addr);
+                            b, _ := json.Marshal(conn);
+                            msg := *NewMessage(CONNECTION, b);
+                            push_channel <-msg;
+                            send(msg, addr);
+                        }
                     case HEAD_REQUEST:
                         //SPAWN CONNECTION
                         var addr *net.UDPAddr;
@@ -163,7 +167,7 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                             send(msg, head_addr);
                         }
                     case HEAD_REQUEST:
-                        var addr *net.UDPAddr;
+                        addr := &net.UDPAddr{};
                         err := json.Unmarshal(msg.Body, &addr);
                         if err != nil {
                             fmt.Println("Could not unmarshal message.")
@@ -176,6 +180,7 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                         break;
                     case TAIL_DEAD:
                         time.Sleep(1 * time.Second);
+                        fmt.Println("Cycle broken.");
                         send(msg, head_addr);
                         head_addr = nil;
                     default:
@@ -187,12 +192,14 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                     msg := *NewMessage(KEEP_ALIVE, []byte{});
                     send(msg, head_addr);
                     if tail_timeout_channel == nil {
-                        tail_timeout_channel = time.After(2 * time.Second);
+                        tail_timeout_channel = time.After(4 * time.Second);
                     }
                 case <-tail_timeout_channel:
+                    fmt.Println("Breaking cycle.");
                     msg := *NewMessage(TAIL_DEAD, []byte{});
                     send(msg, head_addr);
                     head_addr = nil;
+                    tail_timeout_channel = nil;
                 }
             }
         }
