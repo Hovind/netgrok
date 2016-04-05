@@ -93,8 +93,8 @@ func sending_manager(push_channel chan<- Message) (chan<- Message, chan<- Messag
                 send(msg, broadcast_addr);
             case addr := <-tail_channel:
                 b, _ := json.Marshal(local_addr);
-                msg := NewMessage(TAIL_REQUEST, b);
-                send(*msg, addr);
+                msg := *NewMessage(TAIL_REQUEST, b);
+                send(msg, addr);
             }
         }
     }();
@@ -152,11 +152,15 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                         head_addr = addr;
                         conn := NewConnection(local_addr, addr);
                         b, _ := json.Marshal(conn);
-                        send_channel <-*NewMessage(CONNECTION, b);
+                        msg := *NewMessage(CONNECTION, b);
+                        send(msg, addr);
                     case HEAD_REQUEST:
+                        //SPAWN CONNECTION
                         var addr *net.UDPAddr;
                         _ = json.Unmarshal(msg.Body, &addr);
-                        tail_channel <-addr;
+                        b, _ := json.Marshal(local_addr);
+                        msg := *NewMessage(TAIL_REQUEST, b);
+                        send(msg, addr);
                     }
                 }
             } else {
