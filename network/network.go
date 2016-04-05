@@ -148,10 +148,12 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                 }
             } else {
                 select {
+
                 case msg := <-to_network_channel:
                     push_channel <-msg;
                     send(msg, head_addr);
                 case msg :=  <-rcv_channel:
+                    tail_timeout_channel = nil;
                     switch msg.Code {
                     case KEEP_ALIVE:
                         break;
@@ -187,7 +189,6 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                         from_network_channel <-msg;
                         send(msg, head_addr);
                     }
-                    tail_timeout_channel = nil;
                 case <- time.After(1 * time.Second):
                     msg := *NewMessage(KEEP_ALIVE, []byte{});
                     send(msg, head_addr);
