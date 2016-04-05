@@ -49,7 +49,7 @@ func listening_manager(pop_channel chan<- Message, socket, broadcast_socket *net
             case msg := <-broadcast_in_channel:
                 out <-msg;
             case msg := <-tail_in_channel:
-                if /*len(msg.Signatures) != 0 && */msg.Signatures[0] == local_addr.String() {
+                if msg.Code != KEEP_ALIVE && msg.Signatures[0] == local_addr.String() {
                     pop_channel <-msg;
                 } else {
                     out <-msg;
@@ -166,7 +166,7 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                 case msg :=  <-rcv_channel:
                     switch msg.Code {
                     case KEEP_ALIVE:
-                        relay_channel <-msg;
+                        break;//relay_channel <-msg;
                     case CONNECTION:
                         var conn Connection;
                         err := json.Unmarshal(msg.Body, &conn);
