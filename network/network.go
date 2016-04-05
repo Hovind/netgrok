@@ -75,32 +75,6 @@ func send(msg Message, addr *net.UDPAddr) (error) {
     return err;
 }
 
-func sending_manager(push_channel chan<- Message) (chan<- Message, chan<- Message, chan<- Message) {
-    send_channel := make(chan Message);
-    relay_channel := make(chan Message);
-    broadcast_channel := make(chan Message);
-    //tail_channel := make(chan *net.UDPAddr);
-
-    go func() {
-        for {
-            select {
-            case msg := <-send_channel:
-                push_channel <-msg;
-                send(msg, head_addr);
-            case msg := <-relay_channel:
-                send(msg, head_addr);
-            case msg := <-broadcast_channel:
-                send(msg, broadcast_addr);
-            /*case addr := <-tail_channel:
-                b, _ := json.Marshal(local_addr);
-                msg := *NewMessage(TAIL_REQUEST, b);
-                send(msg, addr);
-            */}
-        }
-    }();
-    return send_channel, relay_channel, broadcast_channel;
-}
-
 var local_addr, head_addr, broadcast_addr *net.UDPAddr;
 var socket, broadcast_socket *net.UDPConn;
 
@@ -132,7 +106,6 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
 
     push_channel, pop_channel := buffer.Init();
     rcv_channel := listening_manager(pop_channel, socket, broadcast_socket);
-    send_channel, relay_channel, broadcast_channel := sending_manager(push_channel);
 
     to_network_channel := make(chan Message);
     from_network_channel := make(chan Message);
@@ -140,7 +113,8 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
         for {
             if head_addr == nil {
                 b, _ := json.Marshal(local_addr)
-                broadcast_channel <-*NewMessage(HEAD_REQUEST, b);
+                msg := *NewMessage(HEAD_REQUEST, b);
+                send(msg, broadcast_addr);
                 select {
                 case <- time.After(4 * time.Second):
                     continue;
@@ -153,6 +127,7 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                         conn := NewConnection(local_addr, addr);
                         b, _ := json.Marshal(conn);
                         msg := *NewMessage(CONNECTION, b);
+                        push_channel <-msg;
                         send(msg, addr);
                     case HEAD_REQUEST:
                         //SPAWN CONNECTION
@@ -170,7 +145,8 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
             } else {
                 select {
                 case msg := <-to_network_channel:
-                    send_channel <-msg;
+                    push_channel <-msg;
+                    send(msg, head_addr);
                 case msg :=  <-rcv_channel:
                     switch msg.Code {
                     case KEEP_ALIVE:
@@ -200,20 +176,22 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                         break;
                     case TAIL_DEAD:
                         time.Sleep(1 * time.Second);
-                        relay_channel <-msg;
+                        send(msg, head_addr);
                         head_addr = nil;
                     default:
                         from_network_channel <-msg;
-                        relay_channel <-msg;
+                        send(msg, head_addr);
                     }
                     tail_timeout_channel = nil;
                 case <- time.After(1 * time.Second):
-                    send_channel <-*NewMessage(KEEP_ALIVE, []byte{});
+                    msg := *NewMessage(KEEP_ALIVE, []byte{});
+                    send(msg, head_addr);
                     if tail_timeout_channel == nil {
                         tail_timeout_channel = time.After(2 * time.Second);
                     }
                 case <-tail_timeout_channel:
-                    send_channel <-*NewMessage(TAIL_DEAD, []byte{});
+                    msg := *NewMessage(TAIL_DEAD, []byte{});
+                    send(msg, head_addr);
                     head_addr = nil;
                 }
             }
