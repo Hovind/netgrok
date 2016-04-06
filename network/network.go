@@ -37,27 +37,29 @@ func listener(socket *net.UDPConn) (<-chan Message) {
     return out;
 }
 
-func listening_manager(pop_channel chan<- Message, socket, broadcast_socket *net.UDPConn) (<-chan Message) {
+func listening_manager(pop_channel chan<- Message, socket, broadcast_socket *net.UDPConn) (<-chan Message, <-chan bool) {
     broadcast_in_channel := listener(broadcast_socket);
     tail_in_channel := listener(socket);
 
-    out := make(chan Message);
-    
+    rcv_channel := make(chan Message);
+    tail_timeout_channel := make(chan bool);
     go func() {
         for {
             select {
             case msg := <-broadcast_in_channel:
-                out <-msg;
+                rcv_channel <-msg;
             case msg := <-tail_in_channel:
                 if msg.Code != KEEP_ALIVE && msg.Signatures[0] == local_addr.String() {
                     pop_channel <-msg;
                 } else {
-                    out <-msg;
+                    rcv_channel <-msg;
                 }
+            case <-time.After(4 * time.Second):
+                tail_timeout_channel <-true;
             }
         }
     }();
-    return out;
+    return rcv_channel, tail_timeout_channel;
 }
 
 func send(msg Message, addr *net.UDPAddr) (error) {
@@ -102,10 +104,10 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
         fmt.Println("Sockets have been created.");
     }
 
-    var tail_timeout_channel/*, cycle_timeout_channel*/ <-chan time.Time;
+    //var tail_timeout_channel/*, cycle_timeout_channel*/ <-chan time.Time;
 
     push_channel, pop_channel := buffer.Init();
-    rcv_channel := listening_manager(pop_channel, socket, broadcast_socket);
+    rcv_channel, tail_timeout_channel := listening_manager(pop_channel, socket, broadcast_socket);
 
     to_network_channel := make(chan Message);
     from_network_channel := make(chan Message);
@@ -192,9 +194,6 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                 case <- time.After(1 * time.Second):
                     msg := *NewMessage(KEEP_ALIVE, []byte{});
                     send(msg, head_addr);
-                    if tail_timeout_channel == nil {
-                        tail_timeout_channel = time.After(4 * time.Second);
-                    }
                 case <-tail_timeout_channel:
                     fmt.Println("Breaking cycle.");
                     msg := *NewMessage(TAIL_DEAD, []byte{});
