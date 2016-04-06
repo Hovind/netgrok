@@ -3,62 +3,54 @@ package network
 import (
     "fmt"
     "net"
-    "strconv"
+    //"strconv"
     "encoding/json"
     "time"
     "netgrok/buffer"
     . "netgrok/obj"
 )
 
-
-func listener(socket *net.UDPConn) (<-chan Message) {
-    out := make(chan Message);
-    go func () {
-
-        b := make([]byte, 1024);
-        for {
-            n, addr, err := socket.ReadFromUDP(b);
-            if err != nil {
-                return;
-            }
-            if addr.String() != local_addr.String() && n > 0 {
-                msg := Message{};
-                err := json.Unmarshal(b[:n], &msg);
-                if err != nil {
-                    fmt.Println("Could not unmarshal message.");
-                } else {
-                    out <-msg;
-                }
-                //fmt.Println("Received message with code", msg.Code, "with body", msg.Body, "from", addr.String());
-
-            }
-        }
-    }();
-    return out;
-}
-
-func listening_manager(pop_channel chan<- Message, socket, broadcast_socket *net.UDPConn) (<-chan Message, <-chan bool) {
-    broadcast_in_channel := listener(broadcast_socket);
-    tail_in_channel := listener(socket);
-
-    rcv_channel := make(chan Message);
-    tail_timeout_channel := make(chan bool);
+func listening_worker(pop_channel chan<- Message, socket *net.UDPConn) (<-chan Message, <-chan *net.UDPAddr) {
+    from_network_channel := make(chan Message);
+    addr := &net.UDPAddr{};
+    b := make([]byte, 1024);
     go func() {
         for {
-            select {
-            case msg := <-broadcast_in_channel:
-                rcv_channel <-msg;
-            case msg := <-tail_in_channel:
-                if msg.Code != KEEP_ALIVE && msg.Signatures[0] == local_addr.String() {
-                    pop_channel <-msg;
-                } else {
-                    rcv_channel <-msg;
+            var n int;
+            var err error;
+            n, addr, err = socket.ReadFromUDP(b);
+            if err != nil {
+                fmt.Println("Could not read from UDP!");
+            } else {
+                if addr.String() != local_addr.String() && n > 0 {
+                    msg := Message{};
+                    err := json.Unmarshal(b[:n], &msg);
+                    if err != nil {
+                        fmt.Println("Could not unmarshal message.");
+                    } else {
+                        from_network_channel <-msg;
+
+                    }
+                    //fmt.Println("Received message with code", msg.Code, "with body", msg.Body, "from", addr.String());
+
                 }
-            case <-time.After(4 * time.Second):
-                tail_timeout_channel <-true;
             }
         }
     }();
+    rcv_channel := make(chan Message);
+    tail_timeout_channel := make(chan *net.UDPAddr);
+    for {
+        select {
+        case msg := <-from_network_channel:
+            if msg.Code != KEEP_ALIVE && msg.Signatures[0] == local_addr.String() {
+                pop_channel <-msg;
+            } else {
+                rcv_channel <-msg;
+            }
+        case <-time.After(4 * time.Second):
+            tail_timeout_channel <-addr;
+        }
+    }
     return rcv_channel, tail_timeout_channel;
 }
 
@@ -80,34 +72,21 @@ func send(msg Message, addr *net.UDPAddr) (error) {
 var local_addr, head_addr, broadcast_addr *net.UDPAddr;
 var socket, broadcast_socket *net.UDPConn;
 
-func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
+func Manager(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
     broadcast_addr, _ = net.ResolveUDPAddr("udp4", "255.255.255.255" + ":" + broadcast_in_port);
 
-    temp_socket, err := net.DialUDP("udp4", nil, broadcast_addr);
-    defer temp_socket.Close();
-    temp_addr := temp_socket.LocalAddr();
-    local_addr, err = net.ResolveUDPAddr("udp4", temp_addr.String());
-    local_addr.Port, _ = strconv.Atoi(in_port);
+    socket, err := net.DialUDP("udp4", nil, broadcast_addr);
+    defer socket.Close();
 
-    socket, _ = net.ListenUDP("udp4", local_addr);
     if err != nil {
         fmt.Println("Could not create socket.");
         return nil, nil;
-    }
-    broadcast_socket, _ := net.ListenUDP("udp", broadcast_addr);
-    if err != nil {
-        fmt.Println("Could not create broadcast socket.");
-        socket.Close();
-        return nil, nil;
-
     } else {
         fmt.Println("Sockets have been created.");
     }
 
-    //var tail_timeout_channel/*, cycle_timeout_channel*/ <-chan time.Time;
-
-    push_channel, pop_channel := buffer.Init();
-    rcv_channel, tail_timeout_channel := listening_manager(pop_channel, socket, broadcast_socket);
+    push_channel, pop_channel := buffer.Manager();
+    rcv_channel, tail_timeout_channel := listening_worker(pop_channel, socket);
 
     to_network_channel := make(chan Message);
     from_network_channel := make(chan Message);
