@@ -5,7 +5,7 @@ import (
     "bytes"
 )
 
-func Init() (chan<- Message, chan<- Message) {
+func Manager() (chan<- Message, chan<- Message) {
     push_channel := make(chan Message);
     pop_channel := make(chan Message);
     

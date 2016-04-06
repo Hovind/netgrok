@@ -9,12 +9,12 @@ import (
 )
 
 func main() {
-    if len(os.Args) < 3 {
-        fmt.Println("Too few arguments! I need ports.")
+    if len(os.Args) < 2 {
+        fmt.Println("Too few arguments! I need ports.");
         return;
     }
 
-    to_network_channel, from_network_channel := network.Init(os.Args[1], os.Args[2]);
+    to_network_channel, from_network_channel := network.Manager(os.Args[1]);
     go func() {
         for {
             msg := <-from_network_channel;
