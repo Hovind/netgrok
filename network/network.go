@@ -10,11 +10,12 @@ import (
     . "netgrok/obj"
 )
 
-func listening_worker(pop_channel chan<- Message, broadcast_port string) (<-chan Message, <-chan *net.UDPAddr) {
-    tail_socket, err := net.ListenUDP("udp4", ":" + broadcast_port);
+func listening_worker(pop_channel chan<- Message, broadcast_port string) (<-chan Message, <-chan *net.UDPAddr, *net.UDPAddr) {
+    local_addr, err := net.ResolveUDPAddr("udp4", ":" + broadcast_port);
+    tail_socket, err := net.ListenUDP("udp4", local_addr);
     if err != nil {
         fmt.Println("Could not create tail socket.");
-        return nil, nil;
+        return nil, nil, nil;
     }
 
     addr := &net.UDPAddr{};
@@ -28,7 +29,7 @@ func listening_worker(pop_channel chan<- Message, broadcast_port string) (<-chan
             if err != nil {
                 //fmt.Println("Could not read from UDP!");
             } else {
-                if addr.String() != socket.LocalAddr().String() && n > 0 {
+                if addr.String() != local_addr.String() && n > 0 {
                     msg := Message{};
                     err := json.Unmarshal(b[:n], &msg);
                     if err != nil {
@@ -49,7 +50,7 @@ func listening_worker(pop_channel chan<- Message, broadcast_port string) (<-chan
         for {
             select {
             case msg := <-from_network_channel:
-                if msg.Code != KEEP_ALIVE && msg.Signatures[0] == socket.LocalAddr().String() {
+                if msg.Code != KEEP_ALIVE && msg.Signatures[0] == tail_socket.LocalAddr().String() {
                     pop_channel <-msg;
                 } else {
                     rcv_channel <-msg;
@@ -59,7 +60,7 @@ func listening_worker(pop_channel chan<- Message, broadcast_port string) (<-chan
             }
         }
     }();
-    return rcv_channel, tail_timeout_channel;
+    return rcv_channel, tail_timeout_channel, local_addr;
 }
 
 func send(msg Message, socket *net.UDPConn, addr *net.UDPAddr) (error) {
@@ -80,7 +81,7 @@ func send(msg Message, socket *net.UDPConn, addr *net.UDPAddr) (error) {
 func broadcast(msg Message, socket *net.UDPConn) (error) {
     b, err := json.Marshal(msg);
     if err != nil {
-        fmt.Println("Could not marshal message.");
+        fmt.Println("Could not marshal messaglocal");
     }
     _, err = socket.Write(b);
     if err != nil {
@@ -93,10 +94,11 @@ func broadcast(msg Message, socket *net.UDPConn) (error) {
 
 func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
     broadcast_addr, _ := net.ResolveUDPAddr("udp4", "255.255.255.255" + ":" + broadcast_port);
+
     var head_addr *net.UDPAddr;
     head_socket, err := net.DialUDP("udp4", nil, broadcast_addr);
-    local_addr, err := net.ResolveUDPAddr("udp4", socket.LocalAddr().String());
-    defer socket.Close();
+    broadcast(*NewMessage(KEEP_ALIVE, []byte{}), head_socket);
+    defer head_socket.Close();
 
     if err != nil {
         fmt.Println("Could not create socket.");
@@ -105,18 +107,16 @@ func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
         fmt.Println("Sockets have been created.");
     }
     push_channel, pop_channel := buffer.Manager();
-    rcv_channel, tail_timeout_channel := listening_worker(pop_channel, socket);
+    rcv_channel, tail_timeout_channel, local_addr := listening_worker(pop_channel, broadcast_port);
 
-    fmt.Println("Head:", head_addr);
     to_network_channel := make(chan Message);
     from_network_channel := make(chan Message);
     go func() {
         for {
-            fmt.Println("Head:", head_addr);
             if head_addr == nil {
                 b, _ := json.Marshal(local_addr);
                 msg := *NewMessage(HEAD_REQUEST, b);
-                broadcast(msg, socket);
+                broadcast(msg, head_socket);
                 select {
                 case <-time.After(10 * time.Second):
                     continue;
@@ -133,7 +133,7 @@ func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
                             b, _ := json.Marshal(conn);
                             msg := *NewMessage(CONNECTION, b);
                             push_channel <-msg;
-                            send(msg, socket, addr);
+                            send(msg, head_socket, addr);
                         }
                     case HEAD_REQUEST:
                         //SPAWN CONNECTION
@@ -144,7 +144,7 @@ func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
                         } else {
                             b, _ := json.Marshal(local_addr);
                             msg := *NewMessage(TAIL_REQUEST, b);
-                            send(msg, socket, addr);
+                            send(msg, head_socket, addr);
                         }
                     }
                 }
@@ -153,7 +153,7 @@ func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
 
                 case msg := <-to_network_channel:
                     push_channel <-msg;
-                    send(msg, socket, head_addr);
+                    send(msg, head_socket, head_addr);
                 case msg :=  <-rcv_channel:
                     tail_timeout_channel = nil;
                     switch msg.Code {
@@ -168,7 +168,7 @@ func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
                             if head_addr == nil || head_addr.String() == conn.To.String() {
                                head_addr = conn.From;
                             }
-                            send(msg, socket, head_addr);
+                            send(msg, head_socket, head_addr);
                         }
                     case HEAD_REQUEST:
                         addr := &net.UDPAddr{};
@@ -178,26 +178,26 @@ func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
                         } else {
                             b, _ := json.Marshal(local_addr);
                             msg := *NewMessage(TAIL_REQUEST, b);
-                            send(msg, socket, addr);
+                            send(msg, head_socket, addr);
                         }
                     case TAIL_REQUEST:
                         break;
                     case TAIL_DEAD:
                         time.Sleep(1 * time.Second);
                         fmt.Println("Cycle broken.");
-                        send(msg, socket, head_addr);
+                        send(msg, head_socket, head_addr);
                         head_addr = nil;
                     default:
                         from_network_channel <-msg;
-                        send(msg, socket, head_addr);
+                        send(msg, head_socket, head_addr);
                     }
                 case <- time.After(1 * time.Second):
                     msg := *NewMessage(KEEP_ALIVE, []byte{});
-                    send(msg, socket, head_addr);
+                    send(msg, head_socket, head_addr);
                 case <-tail_timeout_channel:
                     fmt.Println("Breaking cycle.");
                     msg := *NewMessage(TAIL_DEAD, []byte{});
-                    send(msg, socket, head_addr);
+                    send(msg, head_socket, head_addr);
                     head_addr = nil;
                     tail_timeout_channel = nil;
                 }
