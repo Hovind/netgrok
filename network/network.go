@@ -102,7 +102,8 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
         fmt.Println("Sockets have been created.");
     }
 
-    var tail_timeout_channel/*, cycle_timeout_channel*/ <-chan time.Time;
+    tail_timeout_channel := time.NewTimer(0);//, cycle_timeout_channel <-chan time.Time;
+    <-tail_timeout_channel.C;
 
     push_channel, pop_channel := buffer.Init();
     rcv_channel := listening_manager(pop_channel, socket, broadcast_socket);
@@ -153,7 +154,7 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                     push_channel <-msg;
                     send(msg, head_addr);
                 case msg :=  <-rcv_channel:
-                    tail_timeout_channel = nil;
+                    tail_timeout_channel.Stop();
                     switch msg.Code {
                     case KEEP_ALIVE:
                         break;
@@ -189,18 +190,16 @@ func Init(in_port, broadcast_in_port string) (chan<- Message, <-chan Message) {
                         from_network_channel <-msg;
                         send(msg, head_addr);
                     }
-                case <- time.After(1 * time.Second):
+                case <- time.After(1000 * time.Millisecond):
                     msg := *NewMessage(KEEP_ALIVE, []byte{});
                     send(msg, head_addr);
-                    if tail_timeout_channel == nil {
-                        tail_timeout_channel = time.After(4 * time.Second);
-                    }
-                case <-tail_timeout_channel:
+                    tail_timeout_channel.Reset(900 * time.Millisecond);
+                case <-tail_timeout_channel.C:
                     fmt.Println("Breaking cycle.");
                     msg := *NewMessage(TAIL_DEAD, []byte{});
                     send(msg, head_addr);
                     head_addr = nil;
-                    tail_timeout_channel = nil;
+                    tail_timeout_channel.Stop();
                 }
             }
         }
