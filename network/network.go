@@ -19,14 +19,16 @@ func addr_is_remote(local_addrs []net.Addr, addr *net.UDPAddr) bool {
     return true;
 }
 
-func listening_worker(pop_channel chan<- Message, local_addr *net.UDPAddr, broadcast_port string) (<-chan Message) {
+func listening_worker(pop_channel chan<- Message, local_head_addr *net.UDPAddr, broadcast_port string) (<-chan Message, *net.UDPAddr) {
     local_addrs, err := net.InterfaceAddrs();
-    tail_addr, _ := net.ResolveUDPAddr("udp4", ":" + broadcast_port)
-    tail_socket, err := net.ListenUDP("udp4", tail_addr);
+    local_tail_addr, _ := net.ResolveUDPAddr("udp4", local_head_addr.IP.String() + ":" + broadcast_port);
+    tail_socket, err := net.ListenUDP("udp4", local_tail_addr);
 
     if err != nil {
         fmt.Println("Could not create tail socket.");
-        return nil;
+        return nil, nil;
+    } else {
+        fmt.Println("Tail socket has been created:", local_tail_addr);
     }
 
     addr := (*net.UDPAddr)(nil);
@@ -37,25 +39,28 @@ func listening_worker(pop_channel chan<- Message, local_addr *net.UDPAddr, broad
             var n int;
             var err error;
             n, addr, err = tail_socket.ReadFromUDP(b);
+            fmt.Println("SOMETHING");
             if err != nil {
                 fmt.Println("Could not read from UDP!");
             } else {
+
+                msg := Message{};
+                err := json.Unmarshal(b[:n], &msg);
+                fmt.Println(msg.Code);
                 if addr_is_remote(local_addrs, addr) && n > 0 {
-                    msg := Message{};
-                    err := json.Unmarshal(b[:n], &msg);
                     if err != nil {
                         fmt.Println("Could not unmarshal message.");
-                    } else if msg.Signatures[0] == local_addr.IP.String() {
+                    } else if msg.Signatures[0] == local_tail_addr.IP.String() {
                         pop_channel <-msg;
                     } else {
-                        //fmt.Println("Received message with code", msg.Code, "with body", msg.Body, "from", addr.String());
+                        fmt.Println("Received message with code", msg.Code, "with body", msg.Body, "from", addr.String());
                         rcv_channel <-msg;
                     }
                 }
             }
         }
     }();
-    return rcv_channel;
+    return rcv_channel, local_tail_addr;
 }
 
 func send(msg Message, socket *net.UDPConn, addr *net.UDPAddr) (error) {
@@ -73,8 +78,8 @@ func send(msg Message, socket *net.UDPConn, addr *net.UDPAddr) (error) {
     return err;
 }
 
-func request_head(local_addr, broadcast_addr *net.UDPAddr, head_socket *net.UDPConn) (error) {
-    b, err := json.Marshal(local_addr);
+func request_head(local_tail_addr, broadcast_addr *net.UDPAddr, head_socket *net.UDPConn) (error) {
+    b, err := json.Marshal(local_tail_addr);
     if err != nil {
         fmt.Println("Could not marshal local address");
         return err;
@@ -84,21 +89,20 @@ func request_head(local_addr, broadcast_addr *net.UDPAddr, head_socket *net.UDPC
 }
 
 func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
-    broadcast_addr, _ := net.ResolveUDPAddr("udp4", net.IPv4bcast.String() + ":" + broadcast_port);
+    broadcast_addr, _ := net.ResolveUDPAddr("udp4", /*net.IPv4bcast.String()*/"129.241.187.255" + ":" + broadcast_port);
 
     temp_socket, _ := net.DialUDP("udp4", nil, broadcast_addr);
-    local_addr, _ := net.ResolveUDPAddr("udp4", temp_socket.LocalAddr().String());
+    local_head_addr, _ := net.ResolveUDPAddr("udp4", temp_socket.LocalAddr().String());
     temp_socket.Close();
 
     push_channel, pop_channel := buffer.Manager();
-    rcv_channel := listening_worker(pop_channel, local_addr, broadcast_port);
+    rcv_channel, local_tail_addr := listening_worker(pop_channel, local_head_addr, broadcast_port);
 
     to_network_channel := make(chan Message);
     from_network_channel := make(chan Message);
     go func() {
         head_addr := (*net.UDPAddr)(nil);
-        fmt.Println(local_addr);
-        head_socket, err := net.ListenUDP("udp4", local_addr);
+        head_socket, err := net.ListenUDP("udp4", local_head_addr);
         if err != nil {
             fmt.Println("Could not create head socket.", err.Error());
             return;
@@ -110,9 +114,8 @@ func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
         <-tail_timeout.C;
 
         for {
-            fmt.Println("HEAD:", head_addr);
             if head_addr == nil {
-                request_head(local_addr, broadcast_addr, head_socket);
+                request_head(local_tail_addr, broadcast_addr, head_socket);
                 select {
                 case <-time.After(10 * time.Second):
                     continue;
@@ -125,7 +128,7 @@ func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
                             fmt.Println("Could not unmarshal address.");
                         } else {
                             head_addr = addr;
-                            conn := NewConnection(local_addr, addr);
+                            conn := NewConnection(local_tail_addr, addr);
                             b, _ := json.Marshal(conn);
                             msg := *NewMessage(CONNECTION, b);
                             push_channel <-msg;
@@ -182,7 +185,7 @@ func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
                         if err != nil {
                             fmt.Println("Could not unmarshal message.")
                         } else {
-                            b, _ := json.Marshal(local_addr);
+                            b, _ := json.Marshal(local_tail_addr);
                             msg := *NewMessage(TAIL_REQUEST, b);
                             send(msg, head_socket, addr);
                         }
