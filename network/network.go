@@ -32,6 +32,7 @@ func listening_worker(pop_channel chan<- Message, socket *net.UDPConn, local_add
     local_addrs, _ := net.InterfaceAddrs();
 
     rcv_channel := make(chan Packet);
+
     go func() {
         b := make([]byte, 1024);
         for {
@@ -47,6 +48,7 @@ func listening_worker(pop_channel chan<- Message, socket *net.UDPConn, local_add
                     } else if packet.Origin.IP.String() == local_addr.IP.String() {
                         pop_channel <-packet.Msg;
                         rcv_channel <-*NewPacket(KEEP_ALIVE, []byte{}, local_addr);
+
                     } else {
                         //fmt.Println("Received message with code", packet.Code, "with body", packet.Body, "from", addr.String());
                         rcv_channel <-packet;
@@ -97,6 +99,7 @@ func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
     }
 
     push_channel, pop_channel, resend_channel := buffer.Manager();
+
     rcv_channel := listening_worker(pop_channel, socket, local_addr);
 
     to_network_channel := make(chan Message);
