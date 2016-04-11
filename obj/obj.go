@@ -7,20 +7,16 @@ import (
 type Message struct {
     Code int
     Body []byte
+    Origin, Target *net.UDPAddr
 }
 
 type Packet struct {
     Msg Message
-    Origin *net.UDPAddr
-    Signatures []string
 }
 
 
-func NewMessage(code int, body []byte) *Message {
-    return &Message{Code: code, Body: body};
-}
-func NewPacket(code int, body []byte, local_addr *net.UDPAddr) *Packet {
-    return &Packet{Msg: *NewMessage(code, body), Origin: local_addr, Signatures: []string{}};
+func NewMessage(code int, body []byte, local_addr, target_addr *net.UDPAddr) *Message {
+    return &Message{Code: code, Body: body, Origin: local_addr, Target: target_addr};
 }
 
 

@@ -9,12 +9,12 @@ import (
 func Manager() (chan<- Message, chan<- Message, <-chan Message) {
     push_channel := make(chan Message);
     pop_channel := make(chan Message);
-    
+
     resend_channel := make(chan Message);
     pop_success_channel := make(chan Message);
 
     buffer_map := make(map[int]chan<- Message)
-    
+
     go func() {
         for {
             for k, v := range buffer_map {
@@ -22,11 +22,11 @@ func Manager() (chan<- Message, chan<- Message, <-chan Message) {
             }
             select {
             case msg := <-push_channel:
-                buffer_map[msg.Code] = worker(msg, resend_channel, pop_success_channel);
+                buffer_map[msg.Hash()] = worker(msg, resend_channel, pop_success_channel);
             case msg := <-pop_channel:
-                buffer_map[msg.Code] <-msg;
+                buffer_map[msg.Hash()] <-msg;
             case msg := <-pop_success_channel:
-                delete(buffer_map, msg.Code);
+                delete(buffer_map, msg.Hash());
             }
         }
     }();
@@ -45,7 +45,7 @@ func worker(msg Message, resend_channel, pop_success_channel chan<- Message) cha
                 close(pop_worker_channel);
                 return;
             }
-        }   
+        }
     }();
     return pop_worker_channel;
 }

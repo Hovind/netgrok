@@ -28,10 +28,10 @@ func resolve_local_addr(broadcast_addr *net.UDPAddr, broadcast_port string) *net
     return local_addr;
 }
 
-func listening_worker(pop_channel chan<- Message, socket *net.UDPConn, local_addr *net.UDPAddr) (<-chan Packet) {
+func listening_worker(pop_channel, sync_to_order_channel chan<- Message, socket *net.UDPConn, local_addr *net.UDPAddr) (<-chan Message) {
     local_addrs, _ := net.InterfaceAddrs();
 
-    rcv_channel := make(chan Packet);
+    rcv_channel := make(chan Message);
 
     go func() {
         b := make([]byte, 1024);
@@ -40,18 +40,19 @@ func listening_worker(pop_channel chan<- Message, socket *net.UDPConn, local_add
             if err != nil {
                 fmt.Println("Could not read from UDP:", err.Error());
             } else {
-                packet := Packet{};
-                err := json.Unmarshal(b[:n], &packet);
+                msg := Message{};
+                err := json.Unmarshal(b[:n], &msg);
                 if addr_is_remote(local_addrs, addr) && n > 0 {
                     if err != nil {
                         fmt.Println("Could not unmarshal message.");
-                    } else if packet.Origin.IP.String() == local_addr.IP.String() {
-                        pop_channel <-packet.Msg;
-                        rcv_channel <-*NewPacket(KEEP_ALIVE, []byte{}, local_addr);
+                    } else if msg.Origin.IP.String() == local_addr.IP.String() {
+                        sync_to_order_channel <-msg;
+                        pop_channel <-msg;
+                        rcv_channel <-*NewMessage(KEEP_ALIVE, []byte{}, local_addr, nil);
 
                     } else {
-                        //fmt.Println("Received message with code", packet.Code, "with body", packet.Body, "from", addr.String());
-                        rcv_channel <-packet;
+                        //fmt.Println("Received message with code", msg.Code, "with body", msg.Body, "from", addr.String());
+                        rcv_channel <-msg;
                     }
                 }
             }
@@ -60,9 +61,8 @@ func listening_worker(pop_channel chan<- Message, socket *net.UDPConn, local_add
     return rcv_channel;
 }
 
-func send(packet Packet, socket *net.UDPConn, local_addr, addr *net.UDPAddr) (error) {
-    packet.Signatures = append(packet.Signatures, local_addr.IP.String());
-    b, err := json.Marshal(packet);
+func send(msg Message, socket *net.UDPConn, addr *net.UDPAddr) (error) {
+    b, err := json.Marshal(msg);
     if err != nil {
         fmt.Println("Could not marshal message.");
     }
@@ -81,11 +81,11 @@ func request_head(local_addr, broadcast_addr *net.UDPAddr, socket *net.UDPConn) 
         fmt.Println("Could not marshal local address");
         return err;
     }
-    packet := *NewPacket(HEAD_REQUEST, b, local_addr);
-    return send(packet, socket, local_addr, broadcast_addr);
+    msg := *NewMessage(HEAD_REQUEST, b, local_addr, nil);
+    return send(msg, socket, broadcast_addr);
 }
 
-func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
+func Manager(broadcast_port string) (chan<- Message, <-chan Message, <-chan Message, <-chan chan Message) {
     broadcast_addr, _ := net.ResolveUDPAddr("udp4", net.IPv4bcast.String() + ":" + broadcast_port);
     local_addr := resolve_local_addr(broadcast_addr, broadcast_port);
 
@@ -93,14 +93,16 @@ func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
     socket, err := net.ListenUDP("udp4", listen_addr);
     if err != nil {
         fmt.Println("Could not create socket:", err.Error());
-        return nil, nil;
+        return nil, nil, nil, nil;
     } else {
         fmt.Println("Socket has been created:", socket.LocalAddr().String());
     }
 
     push_channel, pop_channel, resend_channel := buffer.Manager();
 
-    rcv_channel := listening_worker(pop_channel, socket, local_addr);
+    sync_to_order_channel := make(chan Message);
+    sync_request_channel := make(chan chan Message);
+    rcv_channel := listening_worker(pop_channel, sync_to_order_channel, socket, local_addr);
 
     to_network_channel := make(chan Message);
     from_network_channel := make(chan Message);
@@ -113,76 +115,65 @@ func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
                 select {
                 case <-time.After(10 * time.Second):
                     continue;
-                case packet := <-rcv_channel:
-                    switch packet.Msg.Code {
+                case msg := <-rcv_channel:
+                    switch msg.Code {
                     case TAIL_REQUEST, HEAD_REQUEST:
-                        head_addr = packet.Origin;
-                        b, _ := json.Marshal(packet.Origin);
-                        packet := *NewPacket(CONNECTION, b, local_addr);
-                        push_channel <-packet.Msg;
-                        send(packet, socket, local_addr, packet.Origin);
+                        head_addr = msg.Origin;
+                        msg := *NewMessage(CONNECTION, []byte{}, local_addr, msg.Origin);
+                        push_channel <-msg;
+                        send(msg, socket, msg.Origin);
                     case CONNECTION:
-                        head_addr = packet.Origin;
-                        send(packet, socket, local_addr, head_addr);
+                        head_addr = msg.Origin;
+                        send(msg, socket, head_addr);
                     }
                 }
             } else {
                 select {
                 case msg := <-to_network_channel:
+                    msg.Origin = local_addr;
                     push_channel <-msg;
-                    packet := *NewPacket(msg.Code, msg.Body, local_addr);
-                    send(packet, socket, local_addr, head_addr);
-                case packet :=  <-rcv_channel:
+                    send(msg, socket, head_addr);
+                case msg :=  <-rcv_channel:
                     tail_timeout.Stop();
-                    switch packet.Msg.Code {
+                    switch msg.Code {
                     case KEEP_ALIVE:
                         break;
                     case CONNECTION:
-                        addr := &net.UDPAddr{};
-                        err := json.Unmarshal(packet.Msg.Body, &addr);
-                        if err != nil {
-                            fmt.Println("Could not unmarshal connection.");
-                        } else {
-                            if head_addr == nil || head_addr.String() == addr.String() {
-                               head_addr = packet.Origin;
-                            }
-                            send(packet, socket, local_addr, head_addr);
+                        if head_addr == nil || head_addr.String() == msg.Target.String() {
+                           head_addr = msg.Origin;
                         }
+                        send(msg, socket, head_addr);
                     case HEAD_REQUEST:
-                        addr := &net.UDPAddr{};
-                        err := json.Unmarshal(packet.Msg.Body, &addr);
-                        if err != nil {
-                            fmt.Println("Could not unmarshal message.")
-                        } else {
-                            b, _ := json.Marshal(local_addr);
-                            packet := *NewPacket(TAIL_REQUEST, b, local_addr);
-                            send(packet, socket, local_addr, addr);
-                        }
+                        msg := *NewMessage(TAIL_REQUEST, []byte{}, local_addr, nil);
+                        send(msg, socket, msg.Origin);
                     case TAIL_REQUEST:
                         break;
                     case TAIL_DEAD:
                         time.Sleep(1 * time.Second);
                         fmt.Println("Cycle broken.");
-                        send(packet, socket, local_addr, head_addr);
+                        send(msg, socket, head_addr);
                         head_addr = nil;
-                    //case SYNC:
-                        //sync_chan <-packet.Msg;
+                    case SYNC_CART:
+                        sync_to_order_channel <-msg;
+                        sync_from_order_channel := make(chan Message);
+                        sync_request_channel <-sync_from_order_channel;
+                        msg := <-sync_from_order_channel;
+                        close(sync_from_order_channel);
+                        send(msg, socket, head_addr);
                     default:
-                        from_network_channel <-packet.Msg;
-                        send(packet, socket, local_addr, head_addr);
+                        from_network_channel <-msg;
+                        send(msg, socket, head_addr);
                     }
                 case msg := <-resend_channel:
-                    packet := *NewPacket(msg.Code, msg.Body, local_addr);
-                    send(packet, socket, local_addr, head_addr);
-                //case something := <-synced_channel: send(packet, socket, local_addr, head_addr);
+                    send(msg, socket, head_addr);
                 case <-tail_timeout.Timer.C:
                     fmt.Println("Breaking cycle.");
-                    packet := *NewPacket(TAIL_DEAD, []byte{}, local_addr);
-                    send(packet, socket, local_addr, head_addr);
+                    msg := *NewMessage(TAIL_DEAD, nil, local_addr, nil);
+                    send(msg, socket, head_addr);
                     head_addr = nil;
                 case <-time.After(1 * time.Second):
-                    packet := *NewPacket(KEEP_ALIVE, []byte{}, local_addr);
-                    send(packet, socket, local_addr, head_addr);
+                    msg := *NewMessage(KEEP_ALIVE, nil, local_addr, nil);
+                    send(msg, socket, head_addr);
                     if !tail_timeout.Running {
                         tail_timeout.Start(4 * time.Second);
                     }
@@ -190,5 +181,5 @@ func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
             }
         }
     }();
-    return to_network_channel, from_network_channel;
+    return to_network_channel, from_network_channel, sync_to_order_channel, sync_request_channel;
 }

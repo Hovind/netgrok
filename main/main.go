@@ -14,20 +14,20 @@ func main() {
         return;
     }
 
-    to_network_channel, from_network_channel := network.Manager(os.Args[1]);
+    to_network_channel, from_network_channel, _, _/*sync_to_order_channel, sync_request_channel*/ := network.Manager(os.Args[1]);
     go func() {
         for {
             msg := <-from_network_channel;
             fmt.Print(string(msg.Body));
         }
     }();
-    fmt.Println(NewMessage(KEEP_ALIVE, []byte{}).Hash());
+    fmt.Println(NewMessage(KEEP_ALIVE, nil, nil, nil).Hash());
     reader := bufio.NewReader(os.Stdin);
     for {
         msg, err := reader.ReadString('\n');
         if err != nil {
             fmt.Println("Error reading from stdin.");
         }
-        to_network_channel <-*NewMessage(ORDER_PUSH, []byte(msg));
+        to_network_channel <-*NewMessage(ORDER_PUSH, []byte(msg), nil, nil);
     }
 }
