@@ -21,11 +21,11 @@ func NewMessage(code int, body []byte, local_addr, target_addr *net.UDPAddr) *Me
 
 
 func (msg *Message) Hash() int {
-    hash := byte(msg.Code);
+    hash := msg.Code;
     for _, e := range msg.Body {
-        hash = hash ^ e;
+        hash = 2*hash ^ int(e);
     }
-    return int(hash);
+    return hash;
 }
 
 const (

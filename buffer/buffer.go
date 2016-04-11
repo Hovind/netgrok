@@ -1,7 +1,6 @@
 package buffer
 
 import (
-    "fmt"
     "time"
     . "netgrok/obj"
 )
@@ -17,9 +16,6 @@ func Manager() (chan<- Message, chan<- Message, <-chan Message) {
 
     go func() {
         for {
-            for k, v := range buffer_map {
-                fmt.Println(k, ":", v);
-            }
             select {
             case msg := <-push_channel:
                 buffer_map[msg.Hash()] = worker(msg, resend_channel, pop_success_channel);
