@@ -21,7 +21,7 @@ func main() {
             fmt.Print(string(msg.Body));
         }
     }();
-
+    fmt.Println(NewMessage(KEEP_ALIVE, []byte{}).Hash());
     reader := bufio.NewReader(os.Stdin);
     for {
         msg, err := reader.ReadString('\n');

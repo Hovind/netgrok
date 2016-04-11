@@ -122,12 +122,8 @@ func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
                         push_channel <-packet.Msg;
                         send(packet, socket, local_addr, packet.Origin);
                     case CONNECTION:
-                        if err != nil {
-                            fmt.Println("Could not unmarshal connection.");
-                        } else {
-                            head_addr = packet.Origin;
-                            send(packet, socket, local_addr, head_addr);
-                        }
+                        head_addr = packet.Origin;
+                        send(packet, socket, local_addr, head_addr);
                     }
                 }
             } else {
@@ -169,6 +165,8 @@ func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
                         fmt.Println("Cycle broken.");
                         send(packet, socket, local_addr, head_addr);
                         head_addr = nil;
+                    //case SYNC:
+                        //sync_chan <-packet.Msg;
                     default:
                         from_network_channel <-packet.Msg;
                         send(packet, socket, local_addr, head_addr);
@@ -176,6 +174,7 @@ func Manager(broadcast_port string) (chan<- Message, <-chan Message) {
                 case msg := <-resend_channel:
                     packet := *NewPacket(msg.Code, msg.Body, local_addr);
                     send(packet, socket, local_addr, head_addr);
+                //case something := <-synced_channel: send(packet, socket, local_addr, head_addr);
                 case <-tail_timeout.Timer.C:
                     fmt.Println("Breaking cycle.");
                     packet := *NewPacket(TAIL_DEAD, []byte{}, local_addr);
